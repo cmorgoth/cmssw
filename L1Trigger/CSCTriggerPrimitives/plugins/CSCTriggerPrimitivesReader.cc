@@ -307,6 +307,10 @@ CSCTriggerPrimitivesReader::CSCTriggerPrimitivesReader(const edm::ParameterSet& 
   //  theFile = new TFile(rootFileName.c_str(), "RECREATE");
   //  theFile->cd();
 
+  //initialize modified alct Tree
+  modified_alct = fs->make<TTree>("llp", "selected information for llp trigger");
+  enableALCTreeBranches();
+
   // Various input parameters.
 
   printps = conf.getParameter<bool>("printps");
@@ -341,8 +345,10 @@ CSCTriggerPrimitivesReader::CSCTriggerPrimitivesReader(const edm::ParameterSet& 
   lcts_tmb_d_token_ = consumes<CSCCorrelatedLCTDigiCollection>(edm::InputTag(lctProducerData_, "MuonCSCCorrelatedLCTDigi"));
   lcts_mpc_d_token_ = consumes<CSCCorrelatedLCTDigiCollection>(edm::InputTag(mpclctProducerData_));
 
-  alcts_e_token_    = consumes<CSCALCTDigiCollection>(edm::InputTag(lctProducerEmul_));
-  clcts_e_token_    = consumes<CSCCLCTDigiCollection>(edm::InputTag(lctProducerEmul_));
+  alcts_e_token_    = consumes<CSCALCTDigiCollection>(edm::InputTag(lctProducerEmul_, "All","CSCTPEmulator"));
+  clcts_e_token_    = consumes<CSCCLCTDigiCollection>(edm::InputTag(lctProducerEmul_, "All","CSCTPEmulator"));
+  //alcts_e_token_    = consumes<CSCALCTDigiCollection>(edm::InputTag(lctProducerEmul_, "","CSCTPEmulator"));
+  //clcts_e_token_    = consumes<CSCCLCTDigiCollection>(edm::InputTag(lctProducerEmul_, "","CSCTPEmulator"));
   pretrigs_e_token_ = consumes<CSCCLCTPreTriggerDigiCollection>(edm::InputTag(lctProducerEmul_));
   lcts_tmb_e_token_ = consumes<CSCCorrelatedLCTDigiCollection>(edm::InputTag(lctProducerEmul_));
   lcts_mpc_e_token_ = consumes<CSCCorrelatedLCTDigiCollection>(edm::InputTag(lctProducerEmul_, "MPCSORTED"));
@@ -353,6 +359,10 @@ CSCTriggerPrimitivesReader::CSCTriggerPrimitivesReader(const edm::ParameterSet& 
   debug = conf.getUntrackedParameter<bool>("debug", false);
   dataIsAnotherMC_ = conf.getUntrackedParameter<bool>("dataIsAnotherMC", false);
 
+  //-----------------------
+  //-----Gen Particles ----
+  //-----------------------
+  genParticlesToken_ = consumes<reco::GenParticleCollection>(conf.getParameter<edm::InputTag>("genParticles"));
   //rootFileName = conf.getUntrackedParameter<string>("rootFileName");
   // Create the root file.
   // Not sure we really need it - comment out for now. -Slava.
@@ -382,6 +392,40 @@ CSCTriggerPrimitivesReader::~CSCTriggerPrimitivesReader() {
   //delete theFile;
 }
 
+void CSCTriggerPrimitivesReader::resetALCTreeBranches()
+{
+  event = 0;
+  nWireDigis = 0;
+  nALCTs     = 0;
+  nStripDigis = 0;
+  nCLCTs     = 0;
+  for (int i = 0; i < 540; i++) 
+    for (int j = 0 ; j < 10; j++) 
+      nCLCTsPerChamber[i][j] = 0;
+
+
+  for (int i = 0; i < MAXLLPS; i++)
+  {
+    llp_decay_x[i] = -666666.;
+    llp_decay_y[i] = -666666.;
+    llp_decay_z[i] = -666666.;
+    llp_in_acceptance[i] = false;
+  }
+};
+
+void CSCTriggerPrimitivesReader::enableALCTreeBranches()
+{
+  modified_alct->Branch("event", &event, "event/I");
+  modified_alct->Branch("nStripDigis", &nStripDigis, "nStripDigis/I");
+  modified_alct->Branch("nWireDigis", &nWireDigis, "nWireDigis/I");
+  modified_alct->Branch("nALCTs", &nALCTs, "nALCTs/I");
+  modified_alct->Branch("nCLCTs", &nCLCTs, "nCLCTs/I");
+  modified_alct->Branch("nCLCTsPerChamber", &nCLCTsPerChamber, "nCLCTsPerChamber[540][10]/I");
+  modified_alct->Branch("llp_decay_x", llp_decay_x, "llp_decay_x[2]/F");
+  modified_alct->Branch("llp_decay_y", llp_decay_y, "llp_decay_y[2]/F");
+  modified_alct->Branch("llp_decay_z", llp_decay_z, "llp_decay_z[2]/F");
+  modified_alct->Branch("llp_in_acceptance", llp_in_acceptance, "llp_in_acceptance[2]/O");
+};
 
 int CSCTriggerPrimitivesReader::maxRing(int station)
 {
@@ -404,6 +448,12 @@ void CSCTriggerPrimitivesReader::analyze(const edm::Event& ev,
   RUN_ = ev.id().run();
   Event_ = ev.id().event();
 
+  //sixie added
+  cout 
+    << "\n\n\n** CSCTriggerPrimitivesReader: processing run #"
+    << ev.id().run() << " event #" << ev.id().event()
+    << "; events so far: " << eventsAnalyzed << " **";
+ 
   // Find the geometry for this event & cache it.  Needed in LCTAnalyzer
   // modules.
   edm::ESHandle<CSCGeometry> cscGeom;
@@ -475,6 +525,9 @@ void CSCTriggerPrimitivesReader::analyze(const edm::Event& ev,
     //    ev.getByLabel(lctProducerEmul_,              clcts_emul);
     //    ev.getByLabel(lctProducerEmul_,              lcts_tmb_emul);
     //    ev.getByLabel(lctProducerEmul_, "MPCSORTED", lcts_mpc_emul);
+    resetALCTreeBranches();
+    event = ev.id().event();
+    HotWires(ev);
     ev.getByToken(alcts_e_token_, alcts_emul);
     ev.getByToken(clcts_e_token_, clcts_emul);
     ev.getByToken(pretrigs_e_token_, pretrigs_emul);
@@ -483,6 +536,9 @@ void CSCTriggerPrimitivesReader::analyze(const edm::Event& ev,
 
     if (!alcts_emul.isValid()) {
       edm::LogWarning("L1CSCTPEmulatorWrongInput")
+        << "+++ Warning: Collection of emulated ALCTs"
+        << " requested, but not found in the event... Skipping the rest +++\n";
+      cout
         << "+++ Warning: Collection of emulated ALCTs"
         << " requested, but not found in the event... Skipping the rest +++\n";
       return;
@@ -516,6 +572,7 @@ void CSCTriggerPrimitivesReader::analyze(const edm::Event& ev,
     fillLCTTMBHistos(lcts_tmb_data.product());
   }
   else if (emulLctsIn_) {
+    cout << "[sixie] Emulated CLCTs\n";
     fillALCTHistos(alcts_emul.product());
     fillCLCTHistos(clcts_emul.product());
     fillLCTTMBHistos(lcts_tmb_emul.product());
@@ -533,6 +590,7 @@ void CSCTriggerPrimitivesReader::analyze(const edm::Event& ev,
   if (emulLctsIn_) {
     MCStudies(ev, alcts_emul.product(), clcts_emul.product());
   }
+  modified_alct->Fill();
 } // analyze
 
 void CSCTriggerPrimitivesReader::endJob() {
@@ -1196,6 +1254,15 @@ void CSCTriggerPrimitivesReader::fillALCTHistos(const CSCALCTDigiCollection* alc
                      << " (sector " << id.triggerSector()
                      << " trig id. " << id.triggerCscId() << ")";
         //cout << "raw id = " << id.rawId() << endl;
+
+	//sixie added
+	cout 
+	  << (*digiIt) << " found in ME" << ((id.endcap() == 1) ? "+" : "-")
+	  << id.station() << "/" << id.ring() << "/" << id.chamber()
+	  << " (sector " << id.triggerSector()
+	  << " trig id. " << id.triggerCscId() << ")" << "\n";
+	
+	
       }
     }
     hAlctPerChamber->Fill(nValidALCTsPerCSC);
@@ -1203,7 +1270,12 @@ void CSCTriggerPrimitivesReader::fillALCTHistos(const CSCALCTDigiCollection* alc
   hAlctPerEvent->Fill(nValidALCTs);
   if (debug) LogTrace("CSCTriggerPrimitivesReader")
                << nValidALCTs << " valid ALCTs found in this event";
+  //sixie added
+  cout   << nValidALCTs << " valid ALCTs found in this event\n";  
+
   numALCT += nValidALCTs;
+  nALCTs = nValidALCTs;
+  std::cout << "valid ALCTs found in this event: " << nValidALCTs << std::endl;
 }
 
 void CSCTriggerPrimitivesReader::fillCLCTHistos(const CSCCLCTDigiCollection* clcts) {
@@ -1211,6 +1283,7 @@ void CSCTriggerPrimitivesReader::fillCLCTHistos(const CSCCLCTDigiCollection* clc
   if (!bookedCLCTHistos) bookCLCTHistos();
 
   int nValidCLCTs = 0;
+ 
   for (auto detUnitIt = clcts->begin(); detUnitIt != clcts->end(); detUnitIt++) {
     int nValidCLCTsPerCSC = 0;
     const CSCDetId& id = (*detUnitIt).first;
@@ -1255,13 +1328,101 @@ void CSCTriggerPrimitivesReader::fillCLCTHistos(const CSCCLCTDigiCollection* clc
                      << id.station() << "/" << id.ring() << "/" << id.chamber()
                      << " (sector " << id.triggerSector()
                      << " trig id. " << id.triggerCscId() << ")";
-      }
+
+	//sixie
+	cout 
+	  << (*digiIt) << " found in ME" << ((id.endcap() == 1) ? "+" : "-")
+                     << id.station() << "/" << id.ring() << "/" << id.chamber()
+                     << " (sector " << id.triggerSector()
+	  << " trig id. " << id.triggerCscId() << ")" << "\n";
+
+	//*********************************************
+
+	int clct_bx = (*digiIt).getBX();
+
+	//figure out the chamber index
+	int CSCChamberIndex = -1;
+	if ( (id.endcap() == 1) ) {
+	  //start counting from "+" end
+
+	  //ME+1/1 : 0-35, +1/2: 36-71, +1/3: 72-107
+	  if ( id.station() == 1) {
+	    CSCChamberIndex = (id.ring()-1) * 36 + (id.chamber() - 1);
+	  } else if ( id.station() == 2) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 108 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 108 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  } else if ( id.station() == 3) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 162 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 162 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  } else if ( id.station() == 4) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 216 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 216 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  }
+	} else {
+	  //ME-1/1 : Start Counting at 270
+	  if ( id.station() == 1) {
+	    CSCChamberIndex = 270 + (id.ring()-1) * 36 + (id.chamber() - 1);
+	  } else if ( id.station() == 2) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 270 + 108 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 270 + 108 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  } else if ( id.station() == 3) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 270 + 162 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 270 + 162 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  } else if ( id.station() == 4) {
+	    if (id.ring() == 1) {
+	      CSCChamberIndex = 270 + 216 + (id.chamber() - 1);
+	    } else if (id.ring() == 2) {
+	      CSCChamberIndex = 270 + 216 + 18 + (id.chamber() - 1);
+	    } else {
+	      CSCChamberIndex = -1;
+	    }
+	  }
+	}
+	//end figure out chamber index
+	//*********************************************
+	if (CSCChamberIndex >= 0 && CSCChamberIndex < 540) {
+	  nCLCTsPerChamber[CSCChamberIndex][clct_bx]++;
+	  cout << "[sixie]: BX = " << clct_bx << "\n";
+	}
+	
+      } //if clct_valid
     }
     hClctPerChamber->Fill(nValidCLCTsPerCSC);
+    
   }
   hClctPerEvent->Fill(nValidCLCTs);
   if (debug) LogTrace("CSCTriggerPrimitivesReader")
                << nValidCLCTs << " valid CLCTs found in this event";
+
+  //sixie
+  cout << nValidCLCTs << " valid CLCTs found in this event\n";
+  nCLCTs = nValidCLCTs;
+
   numCLCT += nValidCLCTs;
 }
 
@@ -1327,6 +1488,14 @@ void CSCTriggerPrimitivesReader::fillLCTTMBHistos(const CSCCorrelatedLCTDigiColl
                      << id.station() << "/" << id.ring() << "/" << id.chamber()
                      << " (sector " << id.triggerSector()
                      << " trig id. " << id.triggerCscId() << ")";
+
+	//sixie
+	cout 
+	  << (*digiIt) << " found in ME" << ((id.endcap() == 1) ? "+" : "-")
+                     << id.station() << "/" << id.ring() << "/" << id.chamber()
+                     << " (sector " << id.triggerSector()
+	  << " trig id. " << id.triggerCscId() << ")" << "\n";
+
       }
     }
     hLctTMBPerChamber->Fill(nValidLCTsPerCSC);
@@ -1334,6 +1503,10 @@ void CSCTriggerPrimitivesReader::fillLCTTMBHistos(const CSCCorrelatedLCTDigiColl
   hLctTMBPerEvent->Fill(nValidLCTs);
   if (debug) LogTrace("CSCTriggerPrimitivesReader")
                << nValidLCTs << " valid LCTs found in this event";
+  
+  //sixie
+  cout   << nValidLCTs << " valid LCTs found in this event\n";
+  
   numLCTTMB += nValidLCTs;
 }
 
@@ -1398,12 +1571,26 @@ void CSCTriggerPrimitivesReader::fillLCTMPCHistos(const CSCCorrelatedLCTDigiColl
                      << id.station() << "/" << id.ring() << "/" << id.chamber()
                      << " (sector " << id.triggerSector()
                      << " trig id. " << id.triggerCscId() << ")";
+
+	//sixie
+	cout  
+	  << "MPC "
+                     << (*digiIt) << " found in ME" << ((id.endcap() == 1) ? "+" : "-")
+                     << id.station() << "/" << id.ring() << "/" << id.chamber()
+                     << " (sector " << id.triggerSector()
+	  << " trig id. " << id.triggerCscId() << ")" << "\n";
+
       }
     }
   }
   hLctMPCPerEvent->Fill(nValidLCTs);
   if (debug) LogTrace("CSCTriggerPrimitivesReader")
                << nValidLCTs << " MPC LCTs found in this event";
+
+  //sixie
+  cout  << nValidLCTs << " MPC LCTs found in this event\n";
+
+
   numLCTMPC += nValidLCTs;
 }
 
@@ -1500,6 +1687,9 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
               strstrm << "\n";
             }
             LogTrace("CSCTriggerPrimitivesReader") << strstrm.str();
+	    //sixie
+	    cout << strstrm.str() << "\n";
+
             //if (stat==1 && ring==1)
             //	std::cout <<"ME11  CompareALCTs "<< strstrm.str()<< std::endl;
           }
@@ -1519,6 +1709,7 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
           perStub[0].t_EventNumberAnalyzed = eventsAnalyzed;
           perStub[0].t_nStubs              = ndata;
           perStub[0].t_nStubs_readout              = ndata;
+          std::cout << "[INFO]: filling per event aclt tree" << std::endl;
           event_tree[0]->Fill();
           //Emul
           for (pe = alctV_emul.begin(); pe != alctV_emul.end(); pe++){
@@ -1555,6 +1746,14 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
               << ((endc == 1) ? "+" : "-") << stat << "/"
               << ring << "/" << cham
               << ": data = " << ndata << " emulator = " << nemul << " +++\n";
+
+	    //sixie
+	    cout 
+	      << "   +++ Different numbers of ALCTs found in ME"
+              << ((endc == 1) ? "+" : "-") << stat << "/"
+              << ring << "/" << cham
+              << ": data = " << ndata << " emulator = " << nemul << " +++\n";
+
           }
           else {
             hAlctCompSameNCsc[endc-1][csctype]->Fill(cham);
@@ -1637,6 +1836,10 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
                 }
                 if (debug) LogTrace("CSCTriggerPrimitivesReader")
                              << "       Identical ALCTs #" << data_trknmb;
+		//sixie
+		cout   << "       Identical ALCTs #" << data_trknmb;
+
+
                 stubs_comparison[0].nStub_emul = j+1;
                 stubs_comparison[0].has_emul = true;
                 stubs_comparison[0].quality_emul = alctV_emul[j].getQuality();
@@ -1654,6 +1857,11 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
                   << "       Different ALCTs #" << data_trknmb << " in ME"
                   << ((endc == 1) ? "+" : "-") << stat << "/"
                   << ring << "/" << cham;
+		//sixie
+		cout 
+		  << "       Different ALCTs #" << data_trknmb << " in ME"
+                  << ((endc == 1) ? "+" : "-") << stat << "/"
+                  << ring << "/" << cham;
               }
 
             }//loop emul
@@ -1663,6 +1871,13 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
                 <<" stubs_comparison 0 key_WG_data "<<stubs_comparison[0].key_WG_data <<" key_WG_emul "<< stubs_comparison[0].key_WG_emul;
             //if (stat==1) std::cout <<" stub_tree filled , ring "<< stubs_comparison[0].ring << std::endl;
             //cout <<"ALCT data BX "<< stubs_comparison[0].bx_data <<" WG "<< stubs_comparison[0].key_WG_data <<" emul BX "<< stubs_comparison[0].bx_emul<<" emul BX corrected "<< stubs_comparison[0].bx_corr_emul <<" WG "<< stubs_comparison[0].key_WG_emul << endl;
+
+	    //sixie
+	    cout 
+	      <<" not matched ALCT from data "<< alctV_data[i]
+	      <<" stubs_comparison 0 key_WG_data "<<stubs_comparison[0].key_WG_data <<" key_WG_emul "<< stubs_comparison[0].key_WG_emul;
+           
+
             stub_tree[0]->Fill();
           }//loop data
           for (int i = 0; i<nemul; i++){
@@ -1700,6 +1915,10 @@ void CSCTriggerPrimitivesReader::compareALCTs(const CSCALCTDigiCollection* alcts
             if (debug)
               LogTrace("CSCTriggerPrimitivesReader")
                 <<"not matched ALCT from emulation "<< alctV_emul[i];
+
+	    //sixie
+	    cout     <<"not matched ALCT from emulation "<< alctV_emul[i];
+
 
           }//loop emul
         }
@@ -2662,7 +2881,8 @@ int CSCTriggerPrimitivesReader::convertBXofLCT(
 }
 
 
-void CSCTriggerPrimitivesReader::HotWires(const edm::Event& iEvent) {
+void CSCTriggerPrimitivesReader::HotWires(const edm::Event& iEvent)
+{
   if (!bookedHotWireHistos) bookHotWireHistos();
   edm::Handle<CSCWireDigiCollection> wires;
   //  iEvent.getByLabel(wireDigiProducer_.label(), wireDigiProducer_.instance(), wires);
@@ -2700,19 +2920,39 @@ void CSCTriggerPrimitivesReader::HotWires(const edm::Event& iEvent) {
       serial_old=serial;
     }
   }
-}
+
+  int nCscWireDigis = 0;
+  CSCWireDigiCollection::DigiRangeIterator wireDetIt;
+  for (auto wireDetIt = wires->begin(); wireDetIt != wires->end(); wireDetIt++)
+  {
+    const CSCWireDigiCollection::Range &range = (*wireDetIt).second;
+    for (CSCWireDigiCollection::const_iterator digiIt = range.first; digiIt != range.second; ++digiIt)
+    {
+      nCscWireDigis++;
+    }
+  }
+
+  std::cout << "=========================" << std::endl;
+  std::cout << "nWIRES: " << nCscWireDigis << std::endl;
+  nWireDigis = nCscWireDigis;
+
+};
+
 
 void CSCTriggerPrimitivesReader::MCStudies(const edm::Event& ev,
                                            const CSCALCTDigiCollection* alcts,
                                            const CSCCLCTDigiCollection* clcts) {
-  // MC particles, if any.
+  cout << "\n[sixie]: " << ev.id().event() << " : " << "MC Studies\n";
+  LogDebug("CSCTriggerPrimitivesReader") << "[sixie]: " << ev.id().event() << " : " << "MC Studies\n";
+
+// MC particles, if any.
   //edm::Handle<edm::HepMCProduct> mcp;
   //ev.getByLabel("source", mcp);
   //ev.getByType(mcp);
   vector<edm::Handle<edm::HepMCProduct> > allhepmcp;
   // Use "getManyByType" to be able to check the existence of MC info.
   ev.getManyByType(allhepmcp);
-
+  ev.getByToken(genParticlesToken_,genParticles);
   //cout << "HepMC info: " << allhepmcp.size() << endl;
   if (allhepmcp.size() > 0) {
     const HepMC::GenEvent& mc = allhepmcp[0]->getHepMCData();
@@ -2731,7 +2971,115 @@ void CSCTriggerPrimitivesReader::MCStudies(const edm::Event& ev,
                    << ", p =  " << (*p)->momentum().rho()  << " GeV"
                    << "\n   eta = " << (*p)->momentum().pseudoRapidity()
                    << ", phi = " << phitmp << " (" << phitmp*180./M_PI << " deg)";
+
+      if( id == 25 || fabs(id) >90000 )
+      {
+        /*std::cout << "MC part #" << ++i << ": id = "  << id
+                   << ", status = " << (*p)->status()
+                   << "\n   pX = " << (*p)->momentum().x()
+                   << ", pY = " << (*p)->momentum().y()
+                   << ", pT = " << (*p)->momentum().perp() << " GeV"
+                   << ", p =  " << (*p)->momentum().rho()  << " GeV"
+                   << "\n   eta = " << (*p)->momentum().pseudoRapidity()
+                   << ", phi = " << phitmp << " (" << phitmp*180./M_PI << " deg)"
+                   << std::endl;
+                   */
+      }
     }
+
+  std::vector<const reco::Candidate*> prunedV;//Allows easier comparison for mother finding
+  //Fills selected gen particles
+  //double pt_cut = isFourJet ? 20.:20.;//this needs to be done downstream
+  const double pt_cut = 0.0;
+  //int llp_id = 9000006;
+  for(size_t i=0; i<genParticles->size();i++)
+  {
+    if(
+       (abs((*genParticles)[i].pdgId()) >= 1 && abs((*genParticles)[i].pdgId()) <= 6 && ( (*genParticles)[i].status() < 30 ))
+       || (abs((*genParticles)[i].pdgId()) >= 11 && abs((*genParticles)[i].pdgId()) <= 16)
+       || (abs((*genParticles)[i].pdgId()) == 21 && (*genParticles)[i].status() < 30)
+       || (abs((*genParticles)[i].pdgId()) >= 23 && abs((*genParticles)[i].pdgId()) <= 25 && ( (*genParticles)[i].status() < 30))
+       || (abs((*genParticles)[i].pdgId()) >= 32 && abs((*genParticles)[i].pdgId()) <= 42)
+       || (abs((*genParticles)[i].pdgId()) >= 32 && abs((*genParticles)[i].pdgId()) <= 42)
+       || (abs((*genParticles)[i].pdgId()) >= 100 && abs((*genParticles)[i].pdgId()) <= 350)
+       // || (abs((*genParticles)[i].pdgId()) >= 1000001 && abs((*genParticles)[i].pdgId()) <= 1000039)
+       || (abs((*genParticles)[i].pdgId()) == 9000006 || abs((*genParticles)[i].pdgId()) == 9000007)
+	)
+       {
+         if ((*genParticles)[i].pt()>pt_cut){
+           prunedV.push_back(&(*genParticles)[i]);
+         }
+       }
+  }
+  //Total number of gen particles
+  //nGenParticle = prunedV.size();
+  //Look for mother particle and Fill gen variables
+  for(unsigned int i = 0; i < prunedV.size(); i++)
+  {
+    if ( abs(prunedV[i]->pdgId()) > 90000)
+    {
+      /*std::cout << "pdgid: " << prunedV[i]->pdgId() << " nDaugthers: "
+      << prunedV[i]->numberOfDaughters()
+      << "; dau0: " << prunedV[i]->daughter(0)->pdgId()
+      << " dau0 vtx: " << prunedV[i]->daughter(0)->vx()
+      << " " << prunedV[i]->daughter(0)->vy()
+      << " " << prunedV[i]->daughter(0)->vz()
+      << "; dau1: " << prunedV[i]->daughter(1)->pdgId()
+      << " dau1 vtx: " << prunedV[i]->daughter(1)->vx()
+      << " " << prunedV[i]->daughter(1)->vy()
+      << " " << prunedV[i]->daughter(1)->vz()
+      << std::endl;
+      */
+      std::cout << "fill!" << std::endl;
+      //assign values to tree
+      if(prunedV[i]->pdgId() == 9000006)
+      {
+        llp_decay_x[0] = prunedV[i]->daughter(0)->vx();
+        llp_decay_y[0] = prunedV[i]->daughter(0)->vy();
+        llp_decay_z[0] = prunedV[i]->daughter(0)->vz();
+        double radius = sqrt(pow(llp_decay_x[0],2.0)+pow(llp_decay_y[0],2.0));
+        if ( (abs(prunedV[i]->eta()) > 0.9 && abs(prunedV[i]->eta()) < 2.4)
+              && (abs(llp_decay_z[0]) > 568. && abs(llp_decay_z[0]) < 1100.)
+              && radius < 695.5 ) llp_in_acceptance[0] = true;
+      }
+      //
+      if(prunedV[i]->pdgId() == -9000006)
+      {
+        llp_decay_x[1] = prunedV[i]->daughter(0)->vx();
+        llp_decay_y[1] = prunedV[i]->daughter(0)->vy();
+        llp_decay_z[1] = prunedV[i]->daughter(0)->vz();
+        double radius = sqrt(pow(llp_decay_x[1],2.0)+pow(llp_decay_y[1],2.0));
+        if ( (abs(prunedV[i]->eta()) > 0.9 && abs(prunedV[i]->eta()) < 2.4)
+              && (abs(llp_decay_z[1]) > 568. && abs(llp_decay_z[1]) < 1100.)
+              && radius < 695.5 ) llp_in_acceptance[1] = true;
+      }
+
+    }
+  }
+
+  double LLP1Eta = log(0.5*(sqrt(pow(llp_decay_x[0],2)+pow(llp_decay_y[0],2)) / llp_decay_z[0]));
+  if (llp_decay_z[0] < 0) LLP1Eta = -1* log(-1*0.5*(sqrt(pow(llp_decay_x[0],2)+pow(llp_decay_y[0],2)) / llp_decay_z[0]));
+  double LLP1Phi = atan2(llp_decay_y[0],llp_decay_x[0]);
+  double LLP2Eta = -1* log(0.5*(sqrt(pow(llp_decay_x[1],2)+pow(llp_decay_y[1],2)) / llp_decay_z[1]));
+  if (llp_decay_z[1] < 0) LLP2Eta = -1* log(-1*0.5*(sqrt(pow(llp_decay_x[1],2)+pow(llp_decay_y[1],2)) / llp_decay_z[1]));
+  double LLP2Phi = atan2(llp_decay_y[1],llp_decay_x[1]);
+
+  cout << "LLP1: " << llp_decay_x[0] << " " << llp_decay_y[0] << " " << llp_decay_z[0] << " " << llp_in_acceptance[0] << " "     
+       << LLP1Eta << " " << LLP1Phi << " "
+       << " \n";
+  cout << "LLP2: " << llp_decay_x[1] << " " << llp_decay_y[1] << " " << llp_decay_z[1] << " " << llp_in_acceptance[1] << " "
+       << LLP2Eta  << " " << LLP2Phi << " "
+       << " \n";
+  LogDebug("CSCTriggerPrimitivesReader") << "LLP1: " << llp_decay_x[0] << " " << llp_decay_y[0] << " " << llp_decay_y[0] << " " << llp_in_acceptance[0] << " \n";
+  LogDebug("CSCTriggerPrimitivesReader") << "LLP2: " << llp_decay_x[1] << " " << llp_decay_y[1] << " " << llp_decay_y[1] << " " << llp_in_acceptance[1] << " \n";
+
+
+  if (llp_in_acceptance[0] || llp_in_acceptance[1]) {
+    cout << "LLP Decay In Acceptance : " << ev.id().run() << ":" << ev.id().luminosityBlock() << ":" <<  ev.id().event() << "\n";
+  }
+
+
+
 
     // If hepMC info is there, try to get wire and comparator digis,
     // and SimHits.
@@ -2780,7 +3128,47 @@ void CSCTriggerPrimitivesReader::MCStudies(const edm::Event& ev,
                    simHits);
 
     // MC-based efficiency studies.
-    calcEfficiency(alcts, clcts, simHits);
+    //calcEfficiency(alcts, clcts, simHits);//originally uncommented
+
+
+
+    //sixie stuff
+    int myALCTCount = 0;
+    for (auto adetUnitIt = alcts->begin(); adetUnitIt != alcts->end(); adetUnitIt++) {
+      const CSCDetId& id = (*adetUnitIt).first;
+      if (checkBadChambers_ && badChambers_->isInBadChamber(id)) continue;
+      const auto& range = (*adetUnitIt).second;
+      for (auto digiIt = range.first;
+	   digiIt != range.second; digiIt++) {
+	
+	bool alct_valid = (*digiIt).isValid();
+	if (alct_valid) {
+	  myALCTCount++;
+	}
+      }
+    }
+
+    int myCLCTCount = 0;
+    for (auto cdetUnitIt = clcts->begin(); cdetUnitIt != clcts->end(); cdetUnitIt++) {
+      const CSCDetId& id = (*cdetUnitIt).first;
+      if (checkBadChambers_ && badChambers_->isInBadChamber(id)) continue;
+      const auto& range = (*cdetUnitIt).second;
+      for (auto digiIt = range.first;
+	   digiIt != range.second; digiIt++) {
+	
+	bool clct_valid = (*digiIt).isValid();
+	if (clct_valid) {
+	  myCLCTCount++;
+	}
+      }
+    } 
+
+    if (llp_in_acceptance[0] || llp_in_acceptance[1]) {
+      cout << "[sixie]: (in acceptance) | ALCTs CLCTs : " << ev.id().event() << " : " << myALCTCount << " " << myCLCTCount << "\n";
+      LogDebug("CSCTriggerPrimitivesReader") << "[sixie]: (in acceptance) | ALCTs CLCTs : " << ev.id().event() << " : " << myALCTCount << " " << myCLCTCount << "\n";
+    }
+
+
   }
 }
 

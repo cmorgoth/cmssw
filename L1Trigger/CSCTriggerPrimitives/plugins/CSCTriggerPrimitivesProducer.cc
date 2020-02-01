@@ -47,6 +47,10 @@ CSCTriggerPrimitivesProducer::CSCTriggerPrimitivesProducer(const edm::ParameterS
   compDigiProducer_ = conf.getParameter<edm::InputTag>("CSCComparatorDigiProducer");
   gemPadDigiProducer_ = conf.existsAs<edm::InputTag>("GEMPadDigiProducer")?conf.getParameter<edm::InputTag>("GEMPadDigiProducer"):edm::InputTag("");
   checkBadChambers_ = conf.getParameter<bool>("checkBadChambers");
+  writeOutAllCLCTs_ = conf.getParameter<bool>("writeOutAllCLCTs");
+  writeOutAllALCTs_ = conf.getParameter<bool>("writeOutAllALCTs");
+
+  savePreTriggers_ = conf.getParameter<bool>("savePreTriggers");
 
   writeOutAllCLCTs_ = conf.getParameter<bool>("writeOutAllCLCTs");
 
@@ -176,6 +180,7 @@ void CSCTriggerPrimitivesProducer::produce(edm::StreamID iID, edm::Event& ev, co
   }
   // Fill output collections if valid input collections are available.
   if (wireDigis.isValid() && compDigis.isValid()) {
+    //std::cout << "passing!!!" << std::endl;
     const CSCBadChambers* temp = checkBadChambers_ ? pBadChambers.product() : new CSCBadChambers;
     streamCache(iID)->build(temp,
                             wireDigis.product(),
